@@ -11,7 +11,7 @@ services:
     ports:
       - "${HOST_PORT:-8080}:${CONTAINER_PORT:-8080}"
     volumes:
-      - ${GEOIP_DB_HOST_PATH}:${GEOIP_DB_PATH:-/data/GeoLite2-Country.mmdb}:ro
+      - ${GEOIP_DB_DIR:-./data}:/data:ro
     environment:
       - PORT=${CONTAINER_PORT:-8080}
-      - GEOIP_DB_PATH=${GEOIP_DB_PATH:-/data/GeoLite2-Country.mmdb}
+      - GEOIP_DB_PATH=/data/${GEOIP_DB_FILENAME:-GeoLite2-Country.mmdb}

@@ -60,16 +60,23 @@ cp .env.example .env
 Edit the `.env` file and set the GeoIP database path:
 
 ```bash
-# Required: Path to GeoIP database on host machine
-GEOIP_DB_HOST_PATH=/path/to/your/GeoLite2-Country.mmdb
+# Optional: Directory containing GeoIP database on host machine
+# Default: ./data (project root/data directory)
+GEOIP_DB_DIR=/path/to/geoip-data
+
+# Optional: GeoIP database filename
+# Default: GeoLite2-Country.mmdb
+GEOIP_DB_FILENAME=GeoLite2-Country.mmdb
 
 # Optional: Other configurations
 HOST_PORT=8080
 CONTAINER_PORT=8080
-GEOIP_DB_PATH=/data/GeoLite2-Country.mmdb
 ```
 
-**Important:** `GEOIP_DB_HOST_PATH` must be set to the actual path of your local GeoLite2-Country.mmdb file, otherwise the container will fail to start!
+**Note:**
+- If `GEOIP_DB_DIR` is not set, the service will look for the database in `./data` directory (relative to docker-compose.yml)
+- If `GEOIP_DB_FILENAME` is not set, it defaults to `GeoLite2-Country.mmdb`
+- Make sure the database file exists in the specified directory
 
 ### 2. Start the Service
 
@@ -104,7 +111,7 @@ docker-compose up -d
 curl http://localhost:8080/health
 
 # Query IP
-curl http://localhost:8080/8.8.8.8
+curl http://localhost:8080/country/8.8.8.8
 # Returns: US
 ```
 
@@ -113,17 +120,31 @@ curl http://localhost:8080/8.8.8.8
 ### Query IP Address
 
 ```bash
-GET /{ip}
+GET /country/{ip}
+GET /country/{ip}?format=json
 ```
 
-Examples:
+**Parameters:**
+- `format` (optional): Response format. Values: `json` (default: plain text)
 
+**Examples:**
+
+**Text format (default):**
 ```bash
-curl http://localhost:8080/8.8.8.8
+curl http://localhost:8080/country/8.8.8.8
 # Response: US
 
-curl http://localhost:8080/1.1.1.1
+curl http://localhost:8080/country/1.1.1.1
 # Response: AU
+```
+
+**JSON format:**
+```bash
+curl http://localhost:8080/country/8.8.8.8?format=json
+# Response: {"ip":"8.8.8.8","country":"US"}
+
+curl http://localhost:8080/country/1.1.1.1?format=json
+# Response: {"ip":"1.1.1.1","country":"AU"}
 ```
 
 ### Health Check
@@ -159,7 +180,7 @@ services:
       - "--experimental.plugins.geoblock.version=v0.2.7"
     labels:
       # Use your self-hosted API instead of https://get.geojs.io/v1/ip/country/{ip}
-      - "traefik.http.middlewares.geoblock.plugin.geoblock.api=http://geoip-api:8080/{ip}"
+      - "traefik.http.middlewares.geoblock.plugin.geoblock.api=http://geoip-api:8080/country/{ip}"
       - "traefik.http.middlewares.geoblock.plugin.geoblock.allowedCountries=US,CA,GB"
       - "traefik.http.middlewares.geoblock.plugin.geoblock.logAllowedRequests=true"
       - "traefik.http.middlewares.geoblock.plugin.geoblock.logApiRequests=true"
@@ -176,7 +197,7 @@ networks:
 1. Ensure both services are on the same Docker network
 2. Replace the default API URL in your geoblock configuration:
    - **Default:** `api: "https://get.geojs.io/v1/ip/country/{ip}"`
-   - **Self-hosted:** `api: "http://geoip-api:8080/{ip}"`
+   - **Self-hosted:** `api: "http://geoip-api:8080/country/{ip}"`
 3. Set your allowed or blocked countries using ISO country codes
 4. Apply the middleware to your Traefik routes
 
@@ -196,10 +217,10 @@ For more details, see the [geoblock plugin documentation](https://github.com/Pas
 
 | Variable | Description | Default | Required |
 |----------|-------------|---------|----------|
-| `GEOIP_DB_HOST_PATH` | Path to GeoIP database file on host machine | None | **Yes** |
+| `GEOIP_DB_DIR` | Directory containing GeoIP database on host machine | ./data | No |
+| `GEOIP_DB_FILENAME` | GeoIP database filename | GeoLite2-Country.mmdb | No |
 | `HOST_PORT` | Port to expose on host machine | 8080 | No |
 | `CONTAINER_PORT` | Port inside container | 8080 | No |
-| `GEOIP_DB_PATH` | Database path inside container | /data/GeoLite2-Country.mmdb | No |
 
 ### Container Management
 
@@ -223,13 +244,16 @@ docker-compose restart
 
 If the container fails to start, check:
 
-1. **Database file path is correct**
+1. **Database directory and file are correct**
    ```bash
-   # Check GEOIP_DB_HOST_PATH in .env file
+   # Check GEOIP_DB_DIR and GEOIP_DB_FILENAME in .env file
    cat .env
 
-   # Verify file exists
-   ls -l /path/to/your/GeoLite2-Country.mmdb
+   # Verify database file exists in the directory
+   # (replace with your actual directory and filename)
+   ls -l /path/to/geoip-data/GeoLite2-Country.mmdb
+   # Or if using default ./data directory:
+   ls -l ./data/GeoLite2-Country.mmdb
    ```
 
 2. **View container logs**
@@ -238,13 +262,13 @@ If the container fails to start, check:
    ```
 
    Common error messages:
-   - `Failed to open GeoIP database` - Database file path is incorrect or file does not exist
-   - `no such file or directory` - GEOIP_DB_HOST_PATH not set or path is wrong
+   - `Failed to open GeoIP database` - Database file does not exist in the mounted directory
+   - `no such file or directory` - GEOIP_DB_DIR not set correctly or GeoLite2-Country.mmdb missing
 
 3. **Permission issues**
    ```bash
    # Ensure database file is readable
-   chmod 644 /path/to/your/GeoLite2-Country.mmdb
+   chmod 644 /path/to/geoip-data/GeoLite2-Country.mmdb
    ```
 
 ## Development
@@ -258,8 +282,7 @@ docker build -t geoip-api .
 # Run container
 docker run -d \
   -p 8080:8080 \
-  -v /path/to/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro \
-  -e GEOIP_DB_PATH=/data/GeoLite2-Country.mmdb \
+  -v /path/to/geoip-data:/data:ro \
   geoip-api
 ```
 

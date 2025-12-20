@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"net"
@@ -12,6 +13,11 @@ import (
 )
 
 var db *geoip2.Reader
+
+type CountryResponse struct {
+	IP      string `json:"ip"`
+	Country string `json:"country"`
+}
 
 func main() {
 	dbPath := os.Getenv("GEOIP_DB_PATH")
@@ -31,19 +37,30 @@ func main() {
 		port = "8080"
 	}
 
-	http.HandleFunc("/", handler)
+	http.HandleFunc("/", rootHandler)
+	http.HandleFunc("/country/", countryHandler)
 	http.HandleFunc("/health", healthHandler)
 
 	log.Printf("GeoIP API listening on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
 }
 
-func handler(w http.ResponseWriter, r *http.Request) {
-	// 获取 IP，去掉开头的 /
-	ipStr := strings.TrimPrefix(r.URL.Path, "/")
-	
-	if ipStr == "" || ipStr == "favicon.ico" {
-		http.Error(w, "Usage: /{ip}", http.StatusBadRequest)
+func rootHandler(w http.ResponseWriter, r *http.Request) {
+	if r.URL.Path != "/" {
+		http.NotFound(w, r)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprint(w, "GeoIP API\n\nUsage:\n  /country/{ip}              - Returns country code (text)\n  /country/{ip}?format=json  - Returns JSON format\n\nExample:\n  /country/8.8.8.8\n  /country/8.8.8.8?format=json\n\nHealth check: /health\n")
+}
+
+func countryHandler(w http.ResponseWriter, r *http.Request) {
+	// 获取 IP，去掉 /country/ 前缀
+	ipStr := strings.TrimPrefix(r.URL.Path, "/country/")
+
+	if ipStr == "" {
+		http.Error(w, "Usage: /country/{ip} or /country/{ip}?format=json", http.StatusBadRequest)
 		return
 	}
 
@@ -55,7 +72,8 @@ func handler(w http.ResponseWriter, r *http.Request) {
 
 	record, err := db.Country(ip)
 	if err != nil {
-		http.Error(w, "XX", http.StatusOK)
+		country := "XX"
+		respondWithFormat(w, r, ipStr, country)
 		return
 	}
 
@@ -64,8 +82,22 @@ func handler(w http.ResponseWriter, r *http.Request) {
 		country = "XX"
 	}
 
-	w.Header().Set("Content-Type", "text/plain")
-	fmt.Fprintln(w, country)
+	respondWithFormat(w, r, ipStr, country)
+}
+
+func respondWithFormat(w http.ResponseWriter, r *http.Request, ip, country string) {
+	format := r.URL.Query().Get("format")
+
+	if format == "json" {
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(CountryResponse{
+			IP:      ip,
+			Country: country,
+		})
+	} else {
+		w.Header().Set("Content-Type", "text/plain")
+		fmt.Fprintln(w, country)
+	}
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
