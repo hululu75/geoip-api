@@ -26,6 +26,27 @@ Download the free GeoLite2-Country database from MaxMind:
 3. Download the `GeoLite2-Country.mmdb` file
 4. Save it to a local path (e.g., `/path/to/GeoLite2-Country.mmdb`)
 
+## Docker Images
+
+Pre-built Docker images are automatically built and published to GitHub Container Registry:
+
+```bash
+# Pull the latest image
+docker pull ghcr.io/hululu75/geoip-api:latest
+
+# Or use a specific version
+docker pull ghcr.io/hululu75/geoip-api:v1.0.0
+```
+
+Available image tags:
+- `latest` - Latest build from master branch
+- `v*.*.*` - Specific version tags
+- `master` - Latest master branch build
+
+Supported platforms:
+- `linux/amd64`
+- `linux/arm64`
+
 ## Quick Start
 
 ### 1. Configure Environment Variables
@@ -52,6 +73,26 @@ GEOIP_DB_PATH=/data/GeoLite2-Country.mmdb
 
 ### 2. Start the Service
 
+**Option A: Using pre-built image (recommended)**
+
+Edit `docker-compose.yml` and uncomment the image line:
+```yaml
+services:
+  geoip-api:
+    # Comment out the build line
+    # build: .
+    # Uncomment the image line
+    image: ghcr.io/hululu75/geoip-api:latest
+```
+
+Then start the service:
+```bash
+docker-compose up -d
+```
+
+**Option B: Build locally**
+
+Keep the default `docker-compose.yml` configuration and run:
 ```bash
 docker-compose up -d
 ```

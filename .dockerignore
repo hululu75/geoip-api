@@ -1,0 +1,34 @@
+# Git
+.git
+.gitignore
+
+# Documentation
+README.md
+*.md
+
+# Environment files
+.env
+.env.example
+
+# Docker
+docker-compose.yml
+Dockerfile
+
+# CI/CD
+.github
+
+# Claude Code
+.claude
+
+# IDE
+.vscode
+.idea
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# GeoIP Database (will be mounted as volume)
+*.mmdb
