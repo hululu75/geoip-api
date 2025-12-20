@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  geoip-api:
+    build: .
+    container_name: geoip-api
+    restart: unless-stopped
+    ports:
+      - "9800:8080"
+    volumes:
+      - /root/docker/geoip/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro
+    environment:
+      - PORT=8080
+      - GEOIP_DB_PATH=/data/GeoLite2-Country.mmdb
