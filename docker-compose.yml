@@ -6,9 +6,9 @@ services:
     container_name: geoip-api
     restart: unless-stopped
     ports:
-      - "9800:8080"
+      - "${HOST_PORT:-8080}:${CONTAINER_PORT:-8080}"
     volumes:
-      - /root/docker/geoip/GeoLite2-Country.mmdb:/data/GeoLite2-Country.mmdb:ro
+      - ${GEOIP_DB_HOST_PATH}:${GEOIP_DB_PATH:-/data/GeoLite2-Country.mmdb}:ro
     environment:
-      - PORT=8080
-      - GEOIP_DB_PATH=/data/GeoLite2-Country.mmdb
+      - PORT=${CONTAINER_PORT:-8080}
+      - GEOIP_DB_PATH=${GEOIP_DB_PATH:-/data/GeoLite2-Country.mmdb}
