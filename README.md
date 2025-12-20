@@ -102,7 +102,11 @@ curl http://localhost:8080/health
 
 This GeoIP API is designed to work with the [geoblock Traefik plugin](https://github.com/PascalMinder/geoblock) to block or allow traffic based on geographic location.
 
+**Self-hosted alternative to external APIs:** Instead of relying on external services like `https://get.geojs.io/v1/ip/country/{ip}`, you can use this self-hosted API for better privacy, reliability, and no rate limiting.
+
 ### Traefik Configuration Example
+
+Replace the default external API (`https://get.geojs.io/v1/ip/country/{ip}`) with your self-hosted API:
 
 ```yaml
 # docker-compose.yml for Traefik
@@ -113,6 +117,7 @@ services:
       - "--experimental.plugins.geoblock.modulename=github.com/PascalMinder/geoblock"
       - "--experimental.plugins.geoblock.version=v0.2.7"
     labels:
+      # Use your self-hosted API instead of https://get.geojs.io/v1/ip/country/{ip}
       - "traefik.http.middlewares.geoblock.plugin.geoblock.api=http://geoip-api:8080/{ip}"
       - "traefik.http.middlewares.geoblock.plugin.geoblock.allowedCountries=US,CA,GB"
       - "traefik.http.middlewares.geoblock.plugin.geoblock.logAllowedRequests=true"
@@ -128,9 +133,19 @@ networks:
 ### Integration Steps
 
 1. Ensure both services are on the same Docker network
-2. Configure the geoblock plugin to use `http://geoip-api:8080/{ip}` as the API endpoint
+2. Replace the default API URL in your geoblock configuration:
+   - **Default:** `api: "https://get.geojs.io/v1/ip/country/{ip}"`
+   - **Self-hosted:** `api: "http://geoip-api:8080/{ip}"`
 3. Set your allowed or blocked countries using ISO country codes
 4. Apply the middleware to your Traefik routes
+
+### Benefits of Self-hosted API
+
+- **Privacy:** IP lookups stay within your infrastructure
+- **Reliability:** No dependency on external services
+- **No rate limits:** Unlimited queries
+- **Performance:** Lower latency for local queries
+- **Cost:** Free to use with GeoLite2 database
 
 For more details, see the [geoblock plugin documentation](https://github.com/PascalMinder/geoblock).
 
