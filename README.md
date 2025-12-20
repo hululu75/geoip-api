@@ -2,12 +2,15 @@
 
 A lightweight GeoIP query service built with Go, deployed via Docker.
 
+**Designed to work with the [Traefik Geoblock Plugin](https://github.com/PascalMinder/geoblock)** for geo-based access control in Traefik reverse proxy.
+
 ## Features
 
 - Query country code by IP address
-- RESTful API interface
+- RESTful API interface compatible with Traefik geoblock plugin
 - Docker containerized deployment
 - Health check endpoint
+- Fast and lightweight Go implementation
 
 ## Prerequisites
 
@@ -94,6 +97,42 @@ Example:
 curl http://localhost:8080/health
 # Response: OK
 ```
+
+## Use with Traefik Geoblock Plugin
+
+This GeoIP API is designed to work with the [geoblock Traefik plugin](https://github.com/PascalMinder/geoblock) to block or allow traffic based on geographic location.
+
+### Traefik Configuration Example
+
+```yaml
+# docker-compose.yml for Traefik
+services:
+  traefik:
+    image: traefik:latest
+    command:
+      - "--experimental.plugins.geoblock.modulename=github.com/PascalMinder/geoblock"
+      - "--experimental.plugins.geoblock.version=v0.2.7"
+    labels:
+      - "traefik.http.middlewares.geoblock.plugin.geoblock.api=http://geoip-api:8080/{ip}"
+      - "traefik.http.middlewares.geoblock.plugin.geoblock.allowedCountries=US,CA,GB"
+      - "traefik.http.middlewares.geoblock.plugin.geoblock.logAllowedRequests=true"
+      - "traefik.http.middlewares.geoblock.plugin.geoblock.logApiRequests=true"
+    networks:
+      - geoip
+
+networks:
+  geoip:
+    external: true
+```
+
+### Integration Steps
+
+1. Ensure both services are on the same Docker network
+2. Configure the geoblock plugin to use `http://geoip-api:8080/{ip}` as the API endpoint
+3. Set your allowed or blocked countries using ISO country codes
+4. Apply the middleware to your Traefik routes
+
+For more details, see the [geoblock plugin documentation](https://github.com/PascalMinder/geoblock).
 
 ## Configuration
 
