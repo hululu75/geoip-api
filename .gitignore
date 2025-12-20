@@ -1,0 +1,30 @@
+# Environment variables
+.env
+
+# Go build artifacts
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+geoip-api
+
+# Test binary
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Dependency directories
+vendor/
+
+# GeoIP database files (download separately)
+*.mmdb
+
+# IDE specific files
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
