@@ -2,7 +2,10 @@ version: '3.8'
 
 services:
   geoip-api:
+    # Option 1: Build locally
     build: .
+    # Option 2: Use pre-built image from GitHub Container Registry
+    # image: ghcr.io/hululu75/geoip-api:latest
     container_name: geoip-api
     restart: unless-stopped
     ports:
