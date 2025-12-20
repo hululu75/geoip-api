@@ -1,0 +1,15 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "git config user.name 'hululu75' && git config user.email 'hululu_hululu@outlook.com'"
+          }
+        ]
+      }
+    ]
+  }
+}
