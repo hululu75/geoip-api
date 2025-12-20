@@ -8,9 +8,66 @@ A lightweight GeoIP query service built with Go, deployed via Docker.
 
 - Query country code by IP address
 - RESTful API interface compatible with Traefik geoblock plugin
+- JSON and text response formats
+- LRU cache for improved performance (configurable)
+- Cache statistics endpoint
 - Docker containerized deployment
 - Health check endpoint
 - Fast and lightweight Go implementation
+
+## Cache Performance Guide
+
+### When to Enable Cache?
+
+**✅ Enable cache (`CACHE_ENABLED=true`) when:**
+
+- **High traffic:** >1000 requests per second
+- **Repeated IPs:** Same IPs queried frequently (CDN, proxies, common clients)
+- **High cache hit rate:** Expected >70% cache hit rate
+- **Remote storage:** Database on network storage or slow disk
+
+**Example scenarios:**
+- Traefik geoblock with high traffic website
+- API proxy serving multiple backend services
+- Log analysis with repeated IP patterns
+
+### When to Disable Cache?
+
+**❌ Disable cache (`CACHE_ENABLED=false`) when:**
+
+- **Low traffic:** <100 requests per second
+- **Unique IPs:** Each request has different IP (log processing, analytics)
+- **Local SSD:** Database file already cached by OS in memory
+- **Low hit rate:** Cache hit rate <30%
+
+**Example scenarios:**
+- Personal projects or development
+- Batch processing unique IPs from logs
+- Database already on fast local SSD
+
+### Performance Benchmark
+
+**Always benchmark your specific use case:**
+
+```bash
+# Run performance comparison test
+./test_cache.sh
+
+# Expected results vary by environment:
+# - High traffic + repeated IPs: 2-5x speedup with cache
+# - Low traffic or unique IPs: Cache may add overhead
+```
+
+**Typical results:**
+
+| Scenario | Cache Hit Rate | Speedup |
+|----------|----------------|---------|
+| CDN/Proxy IPs | 80-95% | 3-5x faster |
+| Mixed traffic | 50-70% | 1.5-2x faster |
+| Unique IPs | <30% | 0.8-1.2x (no benefit) |
+| Local SSD + low traffic | N/A | May be slower |
+
+**Default:** Cache is **disabled** by default for optimal performance in most scenarios.
 
 ## Prerequisites
 
@@ -68,6 +125,13 @@ GEOIP_DB_DIR=/path/to/geoip-data
 # Default: GeoLite2-Country.mmdb
 GEOIP_DB_FILENAME=GeoLite2-Country.mmdb
 
+# Optional: Cache configuration
+# Default: false (disable for most use cases)
+# Enable only for high traffic with repeated IPs
+CACHE_ENABLED=false
+# Maximum cached items (default: 10000, ~1MB memory)
+CACHE_MAX_SIZE=10000
+
 # Optional: Other configurations
 HOST_PORT=8080
 CONTAINER_PORT=8080
@@ -76,6 +140,8 @@ CONTAINER_PORT=8080
 **Note:**
 - If `GEOIP_DB_DIR` is not set, the service will look for the database in `./data` directory (relative to docker-compose.yml)
 - If `GEOIP_DB_FILENAME` is not set, it defaults to `GeoLite2-Country.mmdb`
+- Cache is **disabled** by default for optimal performance in most scenarios
+- Enable cache only for high-traffic scenarios with repeated IPs (see [Cache Performance Guide](#cache-performance-guide))
 - Make sure the database file exists in the specified directory
 
 ### 2. Start the Service
@@ -160,6 +226,35 @@ curl http://localhost:8080/health
 # Response: OK
 ```
 
+### Cache Statistics
+
+```bash
+GET /stats
+```
+
+Returns cache performance metrics in JSON format.
+
+Example:
+
+```bash
+curl http://localhost:8080/stats
+# Response:
+# {
+#   "cache_enabled": true,
+#   "cache_hits": 8542,
+#   "cache_misses": 1458,
+#   "cache_size": 3241,
+#   "cache_hit_rate": 0.854
+# }
+```
+
+**Response fields:**
+- `cache_enabled`: Whether caching is enabled
+- `cache_hits`: Number of cache hits
+- `cache_misses`: Number of cache misses
+- `cache_size`: Current number of cached items
+- `cache_hit_rate`: Cache hit rate (0.0 to 1.0)
+
 ## Use with Traefik Geoblock Plugin
 
 This GeoIP API is designed to work with the [geoblock Traefik plugin](https://github.com/PascalMinder/geoblock) to block or allow traffic based on geographic location.
@@ -221,6 +316,8 @@ For more details, see the [geoblock plugin documentation](https://github.com/Pas
 | `GEOIP_DB_FILENAME` | GeoIP database filename | GeoLite2-Country.mmdb | No |
 | `HOST_PORT` | Port to expose on host machine | 8080 | No |
 | `CONTAINER_PORT` | Port inside container | 8080 | No |
+| `CACHE_ENABLED` | Enable or disable LRU cache | false | No |
+| `CACHE_MAX_SIZE` | Maximum number of cached IP lookups | 10000 | No |
 
 ### Container Management
 
