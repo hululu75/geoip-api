@@ -27,13 +27,17 @@ type CountryResponse struct {
 
 func main() {
 	licenseKey := os.Getenv("MAXMIND_LICENSE_KEY")
-	dbPath := os.Getenv("GEOIP_DB_PATH")
+	dbPath := os.Getenv("GEOIP_DB_PATH") // Highest precedence
 	if dbPath == "" {
 		dbDir := os.Getenv("GEOIP_DB_DIR")
 		if dbDir != "" {
-			dbPath = filepath.Join(dbDir, "GeoLite2-Country.mmdb")
+			dbFileName := os.Getenv("GEOIP_DB_FILENAME")
+			if dbFileName == "" {
+				dbFileName = "GeoLite2-Country.mmdb" // Default filename if only directory is specified
+			}
+			dbPath = filepath.Join(dbDir, dbFileName)
 		} else {
-			dbPath = "/data/GeoLite2-Country.mmdb"
+			dbPath = "/data/GeoLite2-Country.mmdb" // Global default if neither path nor dir is specified
 		}
 	}
 	forceUpdate := os.Getenv("FORCE_DB_UPDATE") == "true"

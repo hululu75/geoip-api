@@ -12,19 +12,42 @@ A lightweight GeoIP query service built with Go, deployed via Docker.
 - Health check endpoint
 - Fast and lightweight Go implementation
 
+## Automatic GeoIP Database Download and Update
+
+This service can automatically download and update the GeoLite2-Country database from MaxMind upon startup, eliminating the need for manual downloads and storage.
+
+### How it Works:
+
+1.  **Configuration**: Provide your `MAXMIND_LICENSE_KEY` environment variable. You can also specify the `GEOIP_DB_DIR`, `GEOIP_DB_FILENAME`, `FORCE_DB_UPDATE`, and `DB_UPDATE_INTERVAL_HOURS`.
+2.  **Initial Download**: If the database file is not found at the configured path, the service will attempt to download the latest `GeoLite2-Country.mmdb` using your `MAXMIND_LICENSE_KEY`.
+3.  **Automatic Updates**: On subsequent startups, the service checks the age of the local database file. If it's older than `DB_UPDATE_INTERVAL_HOURS` (default: 30 days), a new download is initiated.
+4.  **Forced Updates**: Setting `FORCE_DB_UPDATE` to `true` will always trigger a download and update.
+5.  **Robust Verification**: Before replacing the existing database, the newly downloaded file undergoes a two-step verification process:
+    *   It is checked for validity by attempting to open it with the `geoip2-golang` library.
+    *   A sample IP lookup (e.g., 8.8.8.8) is performed to ensure its functionality and content accuracy.
+    Only if both checks pass will the old database be atomically replaced.
+6.  **Zero Downtime Updates**: The application continues to use the currently loaded database while the new one is being downloaded and verified in the background. The updated database is loaded only upon the next application restart.
+
+
 ## Prerequisites
 
 1. Docker and Docker Compose
-2. GeoLite2-Country database file
+2. **MaxMind GeoLite2 License Key (for automatic download)**: If you plan to use the automatic download feature, you'll need a free MaxMind GeoLite2 License Key.
+   - Visit https://www.maxmind.com/en/geolite2/signup to sign up for a free account.
+   - Once registered, generate a license key from your account portal.
 
-### Download GeoIP Database
+### GeoIP Database File (Manual or Automatic)
 
-Download the free GeoLite2-Country database from MaxMind:
+You can either manually provide the `GeoLite2-Country.mmdb` file or let the service download it automatically.
 
-1. Visit https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
-2. Sign up for a free account
-3. Download the `GeoLite2-Country.mmdb` file
-4. Save it to a local path (e.g., `/path/to/GeoLite2-Country.mmdb`)
+**Option A: Automatic Download (Recommended)**
+   - Provide your `MAXMIND_LICENSE_KEY` as an environment variable. The service will download and update the database on startup.
+
+**Option B: Manual Download**
+   - Download the free GeoLite2-Country database from MaxMind:
+     1. Visit https://dev.maxmind.com/geoip/geolite2-free-geolocation-data
+     2. Download the `GeoLite2-Country.mmdb` file.
+     3. Save it to a local path (e.g., `/path/to/GeoLite2-Country.mmdb`) and configure `GEOIP_DB_PATH` or `GEOIP_DB_DIR` accordingly.
 
 ## Docker Images
 
@@ -215,12 +238,16 @@ For more details, see the [geoblock plugin documentation](https://github.com/Pas
 
 ### Environment Variables
 
-| Variable | Description | Default | Required |
-|----------|-------------|---------|----------|
-| `GEOIP_DB_DIR` | Directory containing GeoIP database on host machine | ./data | No |
-| `GEOIP_DB_FILENAME` | GeoIP database filename | GeoLite2-Country.mmdb | No |
-| `HOST_PORT` | Port to expose on host machine | 8080 | No |
-| `CONTAINER_PORT` | Port inside container | 8080 | No |
+| Variable | Description | Default | Required (for auto-download) |
+|----------|-------------|---------|------------------------------|
+| `MAXMIND_LICENSE_KEY` | Your MaxMind GeoLite2 License Key. Required for automatic download and updates. | None | Yes |
+| `GEOIP_DB_PATH` | Full absolute path to the GeoIP database file (e.g., `/data/GeoLite2-Country.mmdb`). Overrides `GEOIP_DB_DIR` and `GEOIP_DB_FILENAME`. | None | No |
+| `GEOIP_DB_DIR` | Directory where the GeoIP database file will be stored or looked for. Used in conjunction with `GEOIP_DB_FILENAME`. | `./data` | No |
+| `GEOIP_DB_FILENAME` | Filename of the GeoIP database (e.g., `my-custom-geo.mmdb`). Used in conjunction with `GEOIP_DB_DIR`. | `GeoLite2-Country.mmdb` | No |
+| `FORCE_DB_UPDATE` | Set to `true` to force a database download and update on startup, regardless of age. | `false` | No |
+| `DB_UPDATE_INTERVAL_HOURS` | Interval in hours after which the database will be considered outdated and trigger an automatic update on startup. | `720` (30 days) | No |
+| `HOST_PORT` | Port to expose on host machine | `8080` | No |
+| `CONTAINER_PORT` | Port inside container | `8080` | No |
 
 ### Container Management
 
@@ -244,9 +271,12 @@ docker-compose restart
 
 If the container fails to start, check:
 
-1. **Database directory and file are correct**
+1. **MaxMind License Key (for auto-download)**
+   - If using automatic download, ensure `MAXMIND_LICENSE_KEY` is correctly set in your environment or `.env` file. Without it, auto-download will fail.
+
+2. **Database directory and file are correct**
    ```bash
-   # Check GEOIP_DB_DIR and GEOIP_DB_FILENAME in .env file
+   # Check GEOIP_DB_PATH, GEOIP_DB_DIR, and GEOIP_DB_FILENAME in .env file
    cat .env
 
    # Verify database file exists in the directory
@@ -256,16 +286,17 @@ If the container fails to start, check:
    ls -l ./data/GeoLite2-Country.mmdb
    ```
 
-2. **View container logs**
+3. **View container logs**
    ```bash
    docker-compose logs geoip-api
    ```
 
    Common error messages:
-   - `Failed to open GeoIP database` - Database file does not exist in the mounted directory
-   - `no such file or directory` - GEOIP_DB_DIR not set correctly or GeoLite2-Country.mmdb missing
+   - `MAXMIND_LICENSE_KEY not set` - Self-explanatory, set the key.
+   - `Failed to open GeoIP database` - Database file does not exist in the mounted directory or is corrupted.
+   - `no such file or directory` - `GEOIP_DB_DIR` not set correctly or `GeoLite2-Country.mmdb` missing/incorrect filename.
 
-3. **Permission issues**
+4. **Permission issues**
    ```bash
    # Ensure database file is readable
    chmod 644 /path/to/geoip-data/GeoLite2-Country.mmdb
