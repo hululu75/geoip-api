@@ -13,12 +13,13 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/oschwald/geoip2-golang"
 )
 
-var db *geoip2.Reader
+var dbValue atomic.Value // stores *geoip2.Reader
 
 type CountryResponse struct {
 	IP      string `json:"ip"`
@@ -84,12 +85,23 @@ func main() {
 		log.Printf("GeoIP database at %s is up to date.", dbPath)
 	}
 
-	var err error
-	db, err = geoip2.Open(dbPath)
+	db, err := geoip2.Open(dbPath)
 	if err != nil {
 		log.Fatalf("Failed to open GeoIP database: %v", err)
 	}
-	defer db.Close()
+	dbValue.Store(db)
+
+	// Start background goroutine for periodic database updates
+	if updateIntervalHours > 0 {
+		go periodicDatabaseUpdater(licenseKey, dbPath, updateIntervalHours)
+	}
+
+	// Cleanup on shutdown (best effort)
+	defer func() {
+		if db := dbValue.Load(); db != nil {
+			db.(*geoip2.Reader).Close()
+		}
+	}()
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -102,6 +114,67 @@ func main() {
 
 	log.Printf("GeoIP API listening on port %s", port)
 	log.Fatal(http.ListenAndServe(":"+port, nil))
+}
+
+func periodicDatabaseUpdater(licenseKey, dbPath string, intervalHours int) {
+	ticker := time.NewTicker(time.Duration(intervalHours) * time.Hour)
+	defer ticker.Stop()
+
+	log.Printf("Started periodic database updater (interval: %d hours)", intervalHours)
+
+	for range ticker.C {
+		log.Println("Checking if database needs to be updated...")
+
+		fileInfo, err := os.Stat(dbPath)
+		if err != nil {
+			log.Printf("Failed to get file info for %s: %v", dbPath, err)
+			continue
+		}
+
+		lastModified := fileInfo.ModTime()
+		if time.Since(lastModified) > time.Duration(intervalHours)*time.Hour {
+			log.Printf("Database is older than %d hours, starting update...", intervalHours)
+
+			if licenseKey == "" {
+				log.Println("Warning: MAXMIND_LICENSE_KEY not set, skipping database update")
+				continue
+			}
+
+			if err := downloadGeoLite2DB(licenseKey, dbPath); err != nil {
+				log.Printf("Failed to update database: %v", err)
+				continue
+			}
+
+			log.Println("Database downloaded successfully, reloading...")
+			if err := reloadDatabase(dbPath); err != nil {
+				log.Printf("Failed to reload database: %v", err)
+				continue
+			}
+
+			log.Println("Database updated and reloaded successfully")
+		} else {
+			log.Printf("Database is up to date (last modified: %s)", lastModified.Format(time.RFC3339))
+		}
+	}
+}
+
+func reloadDatabase(dbPath string) error {
+	newDB, err := geoip2.Open(dbPath)
+	if err != nil {
+		return fmt.Errorf("failed to open new database: %w", err)
+	}
+
+	// Atomically swap the database
+	oldDB := dbValue.Swap(newDB)
+
+	// Close old database if it exists
+	if oldDB != nil {
+		if oldReader, ok := oldDB.(*geoip2.Reader); ok {
+			oldReader.Close()
+		}
+	}
+
+	return nil
 }
 
 func downloadGeoLite2DB(licenseKey, dbPath string) error {
@@ -222,7 +295,10 @@ func countryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Lock-free atomic load - no performance impact!
+	db := dbValue.Load().(*geoip2.Reader)
 	record, err := db.Country(ip)
+
 	if err != nil {
 		country := "XX"
 		respondWithFormat(w, r, ipStr, country)
