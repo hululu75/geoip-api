@@ -11,22 +11,24 @@ A lightweight GeoIP query service built with Go, deployed via Docker.
 - Docker containerized deployment
 - Health check endpoint
 - Fast and lightweight Go implementation
+- **Automatic periodic database updates** - Background service checks and updates database without restart
+- **Configurable log levels** - DEBUG, INFO, ERROR modes for production and troubleshooting
 
 ## Automatic GeoIP Database Download and Update
 
-This service can automatically download and update the GeoLite2-Country database from MaxMind upon startup, eliminating the need for manual downloads and storage.
+This service can automatically download and update the GeoLite2-Country database from MaxMind, eliminating the need for manual downloads and storage.
 
 ### How it Works:
 
 1.  **Configuration**: Provide your `MAXMIND_LICENSE_KEY` environment variable. You can also specify the `GEOIP_DB_DIR`, `GEOIP_DB_FILENAME`, `FORCE_DB_UPDATE`, and `DB_UPDATE_INTERVAL_HOURS`.
 2.  **Initial Download**: If the database file is not found at the configured path, the service will attempt to download the latest `GeoLite2-Country.mmdb` using your `MAXMIND_LICENSE_KEY`.
-3.  **Automatic Updates**: On subsequent startups, the service checks the age of the local database file. If it's older than `DB_UPDATE_INTERVAL_HOURS` (default: 30 days), a new download is initiated.
-4.  **Forced Updates**: Setting `FORCE_DB_UPDATE` to `true` will always trigger a download and update.
+3.  **Periodic Background Updates**: After startup, a background service automatically checks the database age every `DB_UPDATE_INTERVAL_HOURS` (default: 30 days). If the database is outdated, it will be automatically downloaded and reloaded **without requiring a service restart**.
+4.  **Forced Updates**: Setting `FORCE_DB_UPDATE` to `true` will always trigger a download and update on startup.
 5.  **Robust Verification**: Before replacing the existing database, the newly downloaded file undergoes a two-step verification process:
     *   It is checked for validity by attempting to open it with the `geoip2-golang` library.
     *   A sample IP lookup (e.g., 8.8.8.8) is performed to ensure its functionality and content accuracy.
     Only if both checks pass will the old database be atomically replaced.
-6.  **Zero Downtime Updates**: The application continues to use the currently loaded database while the new one is being downloaded and verified in the background. The updated database is loaded only upon the next application restart.
+6.  **Zero Downtime Updates**: The service continues to serve requests using the current database while the new one is being downloaded and verified. Database updates are performed atomically with hot-reload - no restart required!
 
 
 ## Prerequisites
@@ -80,9 +82,12 @@ Copy the example configuration file and modify it:
 cp .env.example .env
 ```
 
-Edit the `.env` file and set the GeoIP database path:
+Edit the `.env` file and configure as needed:
 
 ```bash
+# MaxMind License Key (required for automatic database download/updates)
+MAXMIND_LICENSE_KEY=your_license_key_here
+
 # Optional: Directory containing GeoIP database on host machine
 # Default: ./data (project root/data directory)
 GEOIP_DB_DIR=/path/to/geoip-data
@@ -90,6 +95,15 @@ GEOIP_DB_DIR=/path/to/geoip-data
 # Optional: GeoIP database filename
 # Default: GeoLite2-Country.mmdb
 GEOIP_DB_FILENAME=GeoLite2-Country.mmdb
+
+# Optional: Database update interval in hours (must be integer ≥ 1)
+# Default: 720 (30 days)
+# Examples: 24 (daily), 168 (weekly), 720 (monthly)
+DB_UPDATE_INTERVAL_HOURS=24
+
+# Optional: Log level (ERROR, INFO, DEBUG)
+# Default: INFO
+LOG_LEVEL=INFO
 
 # Optional: Other configurations
 HOST_PORT=8080
@@ -238,16 +252,83 @@ For more details, see the [geoblock plugin documentation](https://github.com/Pas
 
 ### Environment Variables
 
-| Variable | Description | Default | Required (for auto-download) |
-|----------|-------------|---------|------------------------------|
-| `MAXMIND_LICENSE_KEY` | Your MaxMind GeoLite2 License Key. Required for automatic download and updates. | None | Yes |
+| Variable | Description | Default | Required |
+|----------|-------------|---------|----------|
+| `MAXMIND_LICENSE_KEY` | Your MaxMind GeoLite2 License Key. Required for automatic download and updates. | None | Yes (for auto-download) |
 | `GEOIP_DB_PATH` | Full absolute path to the GeoIP database file (e.g., `/data/GeoLite2-Country.mmdb`). Overrides `GEOIP_DB_DIR` and `GEOIP_DB_FILENAME`. | None | No |
 | `GEOIP_DB_DIR` | Directory where the GeoIP database file will be stored or looked for. Used in conjunction with `GEOIP_DB_FILENAME`. | `./data` | No |
 | `GEOIP_DB_FILENAME` | Filename of the GeoIP database (e.g., `my-custom-geo.mmdb`). Used in conjunction with `GEOIP_DB_DIR`. | `GeoLite2-Country.mmdb` | No |
 | `FORCE_DB_UPDATE` | Set to `true` to force a database download and update on startup, regardless of age. | `false` | No |
-| `DB_UPDATE_INTERVAL_HOURS` | Interval in hours after which the database will be considered outdated and trigger an automatic update on startup. | `720` (30 days) | No |
+| `DB_UPDATE_INTERVAL_HOURS` | Interval in hours for periodic database age checks. The background service checks every N hours and updates if database is older than N hours. **Must be an integer ≥ 1** (e.g., `24` for daily checks, `168` for weekly). Decimals like `0.5` are not supported. | `720` (30 days) | No |
+| `LOG_LEVEL` | Logging verbosity level. Options: `ERROR` (errors only), `INFO` (normal operation, recommended for production), `DEBUG` (detailed debugging info including all IP lookups). | `INFO` | No |
 | `HOST_PORT` | Port to expose on host machine | `8080` | No |
 | `CONTAINER_PORT` | Port inside container | `8080` | No |
+
+### Logging Configuration
+
+The service supports three log levels via the `LOG_LEVEL` environment variable:
+
+#### **ERROR** - Production (Minimal Logging)
+Only logs critical errors and failures. Recommended for production environments where you want minimal log output.
+
+```yaml
+environment:
+  - LOG_LEVEL=ERROR
+```
+
+**Example output:**
+```
+[ERROR] Failed to update database: connection timeout
+[ERROR] Failed to get file info for /data/GeoLite2-Country.mmdb: permission denied
+```
+
+#### **INFO** - Production (Recommended)
+Logs important operational events including startup, database updates, and warnings. **Default and recommended for most users.**
+
+```yaml
+environment:
+  - LOG_LEVEL=INFO
+```
+
+**Example output:**
+```
+[INFO] GeoIP database at /data/GeoLite2-Country.mmdb is up to date.
+[INFO] Started periodic database updater (interval: 24 hours)
+[INFO] GeoIP API listening on port 8080
+[INFO] Database is older than 24 hours, starting update...
+[INFO] Database updated and reloaded successfully
+```
+
+#### **DEBUG** - Development & Troubleshooting
+Logs detailed information including configuration values, database age checks, download progress, and **every IP lookup request**. Use for debugging issues.
+
+```yaml
+environment:
+  - LOG_LEVEL=DEBUG
+```
+
+**Example output:**
+```
+[DEBUG] Log level set to: DEBUG
+[DEBUG] Configuration - DB Path: /data/GeoLite2-Country.mmdb, Update Interval: 24 hours, Force Update: false
+[DEBUG] Database file last modified: 2025-12-27T10:30:00Z (age: 25.5 hours)
+[INFO] Started periodic database updater (interval: 24 hours)
+[INFO] GeoIP API listening on port 8080
+[DEBUG] IP lookup: 8.8.8.8 -> US
+[DEBUG] IP lookup: 1.1.1.1 -> AU
+[DEBUG] Periodic check triggered - checking if database needs to be updated...
+[DEBUG] Database age: 25.5 hours (threshold: 24 hours)
+[INFO] Database is older than 24 hours, starting update...
+[DEBUG] Starting database download from MaxMind
+[DEBUG] Download successful, extracting archive...
+[DEBUG] Verifying downloaded database: /tmp/geoipdb123/GeoLite2-Country.mmdb
+[DEBUG] Verification successful: Test IP 8.8.8.8 correctly identified as US.
+[DEBUG] Moving verified database from /tmp/geoipdb123/GeoLite2-Country.mmdb to /data/GeoLite2-Country.mmdb
+[DEBUG] Database file successfully updated at /data/GeoLite2-Country.mmdb
+[INFO] Database updated and reloaded successfully
+```
+
+**⚠️ Note:** DEBUG mode logs every IP lookup request, which can generate significant log volume in high-traffic environments. Use only for troubleshooting.
 
 ### Container Management
 
@@ -255,8 +336,14 @@ For more details, see the [geoblock plugin documentation](https://github.com/Pas
 # Start service
 docker-compose up -d
 
-# View logs
+# View logs (real-time)
 docker-compose logs -f
+
+# View logs with timestamps
+docker-compose logs -f -t geoip-api
+
+# View last 100 log lines
+docker-compose logs --tail=100 geoip-api
 
 # Stop service
 docker-compose down
@@ -288,6 +375,10 @@ If the container fails to start, check:
 
 3. **View container logs**
    ```bash
+   # Use DEBUG mode for detailed troubleshooting
+   LOG_LEVEL=DEBUG docker-compose up
+
+   # Or view existing logs
    docker-compose logs geoip-api
    ```
 
@@ -300,6 +391,42 @@ If the container fails to start, check:
    ```bash
    # Ensure database file is readable
    chmod 644 /path/to/geoip-data/GeoLite2-Country.mmdb
+   ```
+
+### Database Not Updating Automatically
+
+If the database is not updating as expected:
+
+1. **Check update interval configuration**
+   - Verify `DB_UPDATE_INTERVAL_HOURS` is set correctly (must be an integer ≥ 1)
+   - Invalid values like `0.5` will fall back to the default (720 hours)
+
+2. **Enable DEBUG logging to monitor update checks**
+   ```bash
+   # Add to your .env or docker-compose.yml
+   LOG_LEVEL=DEBUG
+
+   # Restart and watch logs
+   docker-compose restart
+   docker-compose logs -f geoip-api
+   ```
+
+3. **Look for update check messages in DEBUG mode**
+   ```
+   [DEBUG] Periodic check triggered - checking if database needs to be updated...
+   [DEBUG] Database age: 25.5 hours (threshold: 24 hours)
+   [INFO] Database is older than 24 hours, starting update...
+   ```
+
+4. **Force an immediate update**
+   ```bash
+   # Add to .env temporarily
+   FORCE_DB_UPDATE=true
+
+   # Restart service
+   docker-compose restart
+
+   # Remove FORCE_DB_UPDATE after successful update
    ```
 
 ## Development
