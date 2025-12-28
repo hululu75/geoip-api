@@ -105,6 +105,11 @@ DB_UPDATE_INTERVAL_HOURS=24
 # Default: INFO
 LOG_LEVEL=INFO
 
+# Optional: Timezone for log timestamps
+# Default: UTC
+# Examples: Asia/Shanghai, America/New_York, Europe/Paris
+TZ=Europe/Paris
+
 # Optional: Other configurations
 HOST_PORT=8080
 CONTAINER_PORT=8080
@@ -261,6 +266,7 @@ For more details, see the [geoblock plugin documentation](https://github.com/Pas
 | `FORCE_DB_UPDATE` | Set to `true` to force a database download and update on startup, regardless of age. | `false` | No |
 | `DB_UPDATE_INTERVAL_HOURS` | Interval in hours for periodic database age checks. The background service checks every N hours and updates if database is older than N hours. **Must be an integer ≥ 1** (e.g., `24` for daily checks, `168` for weekly). Decimals like `0.5` are not supported. | `720` (30 days) | No |
 | `LOG_LEVEL` | Logging verbosity level. Options: `ERROR` (errors only), `INFO` (normal operation, recommended for production), `DEBUG` (detailed debugging info including all IP lookups). | `INFO` | No |
+| `TZ` | Timezone for log timestamps. Use IANA timezone names (e.g., `Asia/Shanghai`, `America/New_York`, `Europe/London`). See [TZ database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones) for valid values. | `UTC` | No |
 | `HOST_PORT` | Port to expose on host machine | `8080` | No |
 | `CONTAINER_PORT` | Port inside container | `8080` | No |
 
@@ -329,6 +335,53 @@ environment:
 ```
 
 **⚠️ Note:** DEBUG mode logs every IP lookup request, which can generate significant log volume in high-traffic environments. Use only for troubleshooting.
+
+### Timezone Configuration
+
+By default, all log timestamps are displayed in UTC. You can configure the timezone to match your local time using the `TZ` environment variable.
+
+#### Common Timezones
+
+```yaml
+# Europe
+TZ=Europe/Paris       # France (CET/CEST)
+TZ=Europe/London      # UK (GMT/BST)
+TZ=Europe/Berlin      # Germany (CET/CEST)
+
+# Asia
+TZ=Asia/Shanghai      # China (CST)
+TZ=Asia/Tokyo         # Japan (JST)
+TZ=Asia/Dubai         # UAE (GST)
+
+# Americas
+TZ=America/New_York   # US Eastern (EST/EDT)
+TZ=America/Chicago    # US Central (CST/CDT)
+TZ=America/Los_Angeles # US Pacific (PST/PDT)
+
+# UTC (default)
+TZ=UTC
+```
+
+#### Example: Setting Europe/Paris Timezone
+
+Add to your `.env` file or `docker-compose.yml`:
+
+```yaml
+environment:
+  - TZ=Europe/Paris
+```
+
+**Log output comparison:**
+
+```
+# With TZ=UTC (default)
+2025/12/28 10:30:45 [INFO] Database updated and reloaded successfully
+
+# With TZ=Europe/Paris
+2025/12/28 11:30:45 [INFO] Database updated and reloaded successfully
+```
+
+For a complete list of valid timezone names, see the [IANA TZ database](https://en.wikipedia.org/wiki/List_of_tz_database_time_zones).
 
 ### Container Management
 
