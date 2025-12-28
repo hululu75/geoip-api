@@ -15,3 +15,4 @@ services:
     environment:
       - PORT=${CONTAINER_PORT:-8080}
       - GEOIP_DB_PATH=/data/${GEOIP_DB_FILENAME:-GeoLite2-Country.mmdb}
+      - TZ=${TZ:-UTC}
