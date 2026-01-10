@@ -19,6 +19,42 @@ A simple, high-performance GeoIP API written in Go, providing country, city, and
 *   [Go](https://golang.org/doc/install) (version 1.21 or higher, for local development)
 *   **MaxMind GeoLite2 Database License Key:** You need a license key from MaxMind to download the GeoLite2 database. You can obtain one by [signing up for a GeoLite2 Free Account](https://www.maxmind.com/en/geolite2/signup).
 
+## Quick Start
+
+Follow these steps to quickly get the GeoIP API running and make your first request:
+
+1.  **Configure your MaxMind License Key:**
+    Copy `.env.example` to `.env` and replace `your_license_key_here` with your actual MaxMind license key.
+
+    ```bash
+    cp .env.example .env
+    # Edit .env and set MAXMIND_LICENSE_KEY
+    ```
+
+2.  **Launch the API with Docker Compose:**
+    From the project root, run:
+
+    ```bash
+    docker-compose up -d
+    ```
+
+    This will build the Docker image (if not already built), download the GeoLite2 database, and start the API in the background.
+
+3.  **Make your first API call:**
+    Once the service is running (it might take a minute for the database to download on first run), you can query an IP address.
+
+    ```bash
+    curl http://localhost:8080/country/8.8.8.8
+    ```
+
+    **Expected Output:**
+
+    ```
+    US
+    ```
+
+You can now explore other endpoints and configurations detailed below.
+
 ### Running with Docker Compose
 
 The easiest way to get started is using `docker-compose`. Ensure your `docker-compose.yml` is configured with your `MAXMIND_LICENSE_KEY`.
