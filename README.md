@@ -2,6 +2,8 @@
 
 A simple, high-performance GeoIP API written in Go, providing country, city, and region lookup functionalities. It supports automatic MaxMind GeoLite2 database downloads and updates, and can be easily deployed with Docker.
 
+Designed to work with the [Geo Access Control Plugin](https://github.com/hululu75/geo-access-control) and other Traefik middleware plugins (such as Traefik Geoblock Plugin) for geo-based access control in Traefik reverse proxy.
+
 ## Features
 
 *   **Fast GeoIP Lookups:** Efficiently retrieves geographical information based on IP addresses.
@@ -207,3 +209,71 @@ Returns `OK` if the API is running.
 curl http://localhost:8080/health
 # Output: OK
 ```
+
+## Integration with Traefik Plugins
+
+This GeoIP API is designed to work seamlessly with Traefik middleware plugins for geo-based access control. It provides the geographic data backend that these plugins use to enforce access rules.
+
+### Geo Access Control Plugin
+
+This API is primarily designed to work with [geo-access-control](https://github.com/hululu75/geo-access-control), a powerful Traefik middleware plugin that provides comprehensive geographic access control based on country, region, city, and IP addresses.
+
+**Key Features when used together:**
+
+*   **Unified Access Rules:** Define allow/deny rules for countries, regions, cities, and specific IPs in a single configuration
+*   **Hierarchical Rule Logic:** Apply "most specific rule wins" with IP rules taking precedence over geographic rules
+*   **Flexible Response Handling:** Customize HTTP status codes, response messages, or redirect blocked requests
+*   **LRU Caching:** The plugin caches GeoIP lookups for improved performance
+*   **Path Exclusions:** Exclude specific paths from geographic checks using regex patterns
+*   **Private IP Handling:** Optionally allow local/private IPs to bypass checks
+
+**Example Configuration:**
+
+```yaml
+# docker-compose.yml
+services:
+  geoip-api:
+    image: geoip-api
+    environment:
+      - MAXMIND_LICENSE_KEY=your_license_key
+      - GEOIP_DB_PATH=/data/GeoLite2-City.mmdb
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./data:/data
+
+# Traefik dynamic configuration
+http:
+  middlewares:
+    geo-access-control:
+      plugin:
+        geo-access-control:
+          geoIPApiUrl: "http://geoip-api:8080"
+          accessRules:
+            allowCountries:
+              - US
+              - CA
+            denyRegions:
+              - "CN|HK"
+            allowIPs:
+              - "192.168.1.0/24"
+          onBlock:
+            statusCode: 403
+            message: "Access denied from your location"
+```
+
+### Compatibility with Other Plugins
+
+This API is also compatible with other Traefik GeoIP-based plugins, including:
+
+*   **Traefik Geoblock Plugin:** Works with any plugin that expects standard GeoIP API endpoints
+*   **Custom Middleware:** Can be integrated into custom Traefik middleware that requires geographic data
+
+The API's flexible output format (plain text and JSON) and standard endpoint structure (`/country/{ip}`, `/city/{ip}`, `/region/{ip}`) ensure broad compatibility with various geo-blocking and access control solutions.
+
+**API Output Formats:**
+
+*   **Plain Text:** Simple, pipe-delimited format (e.g., `US|CA` for region queries)
+*   **JSON:** Structured data format for easier parsing in custom middleware
+
+This makes it easy to integrate with existing tools or build your own geographic access control solutions.
