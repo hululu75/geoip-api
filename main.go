@@ -13,14 +13,18 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/oschwald/geoip2-golang"
 )
 
-var dbValue atomic.Value // stores *geoip2.Reader
-var isCityDB atomic.Bool // tracks if database is City (true) or Country (false)
+var (
+	dbValue  atomic.Value   // stores *geoip2.Reader
+	isCityDB atomic.Bool    // tracks if database is City (true) or Country (false)
+	dbMutex  = &sync.RWMutex{} // Mutex to protect DB access during reloads
+)
 
 // Log levels
 const (
@@ -187,6 +191,8 @@ func main() {
 
 	// Cleanup on shutdown (best effort)
 	defer func() {
+		dbMutex.Lock()
+		defer dbMutex.Unlock()
 		if db := dbValue.Load(); db != nil {
 			db.(*geoip2.Reader).Close()
 		}
@@ -258,11 +264,15 @@ func reloadDatabase(dbPath string) error {
 		return fmt.Errorf("failed to open new database: %w", err)
 	}
 
-	// Detect database type
+	// Detect database type before acquiring lock
 	if err := detectDatabaseType(newDB); err != nil {
 		newDB.Close()
-		return fmt.Errorf("failed to detect database type: %w", err)
+		return fmt.Errorf("failed to detect new database type: %w", err)
 	}
+
+	// Acquire write lock to swap databases
+	dbMutex.Lock()
+	defer dbMutex.Unlock()
 
 	// Atomically swap the database
 	oldDB := dbValue.Swap(newDB)
@@ -270,6 +280,7 @@ func reloadDatabase(dbPath string) error {
 	// Close old database if it exists
 	if oldDB != nil {
 		if oldReader, ok := oldDB.(*geoip2.Reader); ok {
+			logInfo("Closing old GeoIP database.")
 			oldReader.Close()
 		}
 	}
@@ -433,6 +444,9 @@ func countryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	dbMutex.RLock()
+	defer dbMutex.RUnlock()
+
 	db := dbValue.Load().(*geoip2.Reader)
 	var country string
 
@@ -479,6 +493,9 @@ func cityHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid IP address", http.StatusBadRequest)
 		return
 	}
+
+	dbMutex.RLock()
+	defer dbMutex.RUnlock()
 
 	db := dbValue.Load().(*geoip2.Reader)
 	var country, city, region string
@@ -532,6 +549,9 @@ func regionHandler(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "Invalid IP address", http.StatusBadRequest)
 		return
 	}
+
+	dbMutex.RLock()
+	defer dbMutex.RUnlock()
 
 	db := dbValue.Load().(*geoip2.Reader)
 	var country, region string
