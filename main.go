@@ -3,6 +3,7 @@ package main
 import (
 	"archive/tar"
 	"compress/gzip"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -11,11 +12,13 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/oschwald/geoip2-golang"
@@ -26,6 +29,12 @@ const (
 	maxDownloadSize = 100 * 1024 * 1024
 	// HTTP client timeout for downloads
 	httpTimeout = 5 * time.Minute
+	// HTTP server timeouts to prevent slowloris attacks
+	serverReadTimeout  = 10 * time.Second
+	serverWriteTimeout = 10 * time.Second
+	serverIdleTimeout  = 60 * time.Second
+	// Graceful shutdown timeout
+	shutdownTimeout = 30 * time.Second
 )
 
 var (
@@ -148,8 +157,12 @@ func main() {
 	updateIntervalHoursStr := os.Getenv("DB_UPDATE_INTERVAL_HOURS")
 	updateIntervalHours := 720 // Default to 30 days (30 * 24 hours)
 	if updateIntervalHoursStr != "" {
-		if i, err := strconv.Atoi(updateIntervalHoursStr); err == nil {
+		if i, err := strconv.Atoi(updateIntervalHoursStr); err == nil && i >= 0 {
 			updateIntervalHours = i
+		} else if err != nil {
+			logInfo("Invalid DB_UPDATE_INTERVAL_HOURS '%s', using default %d", updateIntervalHoursStr, updateIntervalHours)
+		} else {
+			logInfo("DB_UPDATE_INTERVAL_HOURS must be non-negative, using default %d", updateIntervalHours)
 		}
 	}
 
@@ -207,30 +220,66 @@ func main() {
 		go periodicDatabaseUpdater(licenseKey, dbPath, updateIntervalHours)
 	}
 
-	// Cleanup on shutdown (best effort)
-	defer func() {
-		dbMutex.Lock()
-		defer dbMutex.Unlock()
-		if dbRaw := dbValue.Load(); dbRaw != nil {
-			if db, ok := dbRaw.(*geoip2.Reader); ok {
-				db.Close()
-			}
-		}
-	}()
-
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
 	}
 
-	http.HandleFunc("/", rootHandler)
-	http.HandleFunc("/country/", countryHandler)
-	http.HandleFunc("/city/", cityHandler)
-	http.HandleFunc("/region/", regionHandler)
-	http.HandleFunc("/health", healthHandler)
+	// Setup HTTP routes
+	mux := http.NewServeMux()
+	mux.HandleFunc("/", rootHandler)
+	mux.HandleFunc("/country/", countryHandler)
+	mux.HandleFunc("/city/", cityHandler)
+	mux.HandleFunc("/region/", regionHandler)
+	mux.HandleFunc("/health", healthHandler)
 
-	logInfo("GeoIP API listening on port %s", port)
-	log.Fatal(http.ListenAndServe(":"+port, nil))
+	// Configure HTTP server with timeouts
+	server := &http.Server{
+		Addr:         ":" + port,
+		Handler:      mux,
+		ReadTimeout:  serverReadTimeout,
+		WriteTimeout: serverWriteTimeout,
+		IdleTimeout:  serverIdleTimeout,
+	}
+
+	// Channel to receive shutdown signals
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+
+	// Start server in goroutine
+	go func() {
+		logInfo("GeoIP API listening on port %s", port)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("HTTP server error: %v", err)
+		}
+	}()
+
+	// Wait for shutdown signal
+	<-stop
+	logInfo("Shutdown signal received, initiating graceful shutdown...")
+
+	// Create shutdown context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+	defer cancel()
+
+	// Shutdown HTTP server gracefully
+	if err := server.Shutdown(ctx); err != nil {
+		logError("HTTP server shutdown error: %v", err)
+	} else {
+		logInfo("HTTP server stopped gracefully")
+	}
+
+	// Cleanup database
+	dbMutex.Lock()
+	if dbRaw := dbValue.Load(); dbRaw != nil {
+		if db, ok := dbRaw.(*geoip2.Reader); ok {
+			db.Close()
+			logInfo("GeoIP database closed")
+		}
+	}
+	dbMutex.Unlock()
+
+	logInfo("Shutdown complete")
 }
 
 func periodicDatabaseUpdater(licenseKey, dbPath string, intervalHours int) {
@@ -435,6 +484,28 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 	return nil
 }
 
+// getDatabase safely retrieves the database reader with proper locking.
+// Returns the reader, a boolean indicating if it's a City database, and any error.
+// The caller must call the returned unlock function when done.
+func getDatabase() (*geoip2.Reader, bool, func(), error) {
+	dbMutex.RLock()
+
+	dbRaw := dbValue.Load()
+	if dbRaw == nil {
+		dbMutex.RUnlock()
+		return nil, false, nil, fmt.Errorf("database not available")
+	}
+
+	db, ok := dbRaw.(*geoip2.Reader)
+	if !ok {
+		dbMutex.RUnlock()
+		return nil, false, nil, fmt.Errorf("database not available")
+	}
+
+	isCity := isCityDB.Load()
+	return db, isCity, dbMutex.RUnlock, nil
+}
+
 func rootHandler(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
@@ -489,22 +560,15 @@ func countryHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbMutex.RLock()
-	defer dbMutex.RUnlock()
+	db, isCity, unlock, err := getDatabase()
+	if err != nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+	defer unlock()
 
-	dbRaw := dbValue.Load()
-	if dbRaw == nil {
-		http.Error(w, "Database not available", http.StatusServiceUnavailable)
-		return
-	}
-	db, ok := dbRaw.(*geoip2.Reader)
-	if !ok {
-		http.Error(w, "Database not available", http.StatusServiceUnavailable)
-		return
-	}
 	var country string
-
-	if isCityDB.Load() {
+	if isCity {
 		record, err := db.City(ip)
 		if err != nil {
 			logDebug("IP lookup failed for %s: %v", ipStr, err)
@@ -548,22 +612,15 @@ func cityHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbMutex.RLock()
-	defer dbMutex.RUnlock()
+	db, isCity, unlock, err := getDatabase()
+	if err != nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+	defer unlock()
 
-	dbRaw := dbValue.Load()
-	if dbRaw == nil {
-		http.Error(w, "Database not available", http.StatusServiceUnavailable)
-		return
-	}
-	db, ok := dbRaw.(*geoip2.Reader)
-	if !ok {
-		http.Error(w, "Database not available", http.StatusServiceUnavailable)
-		return
-	}
 	var country, city, region string
-
-	if isCityDB.Load() {
+	if isCity {
 		record, err := db.City(ip)
 		if err != nil {
 			logDebug("IP lookup failed for %s: %v", ipStr, err)
@@ -575,13 +632,11 @@ func cityHandler(w http.ResponseWriter, r *http.Request) {
 			}
 			city = record.City.Names["en"]
 			if len(record.Subdivisions) > 0 {
-				// Only return the region code, not the full COUNTRY-REGION format
 				region = record.Subdivisions[0].IsoCode
 			}
 			logDebug("IP lookup: %s -> Country: %s, City: %s, Region: %s", ipStr, country, city, region)
 		}
 	} else {
-		// Country database - only has country info
 		record, err := db.Country(ip)
 		if err != nil {
 			logDebug("IP lookup failed for %s: %v", ipStr, err)
@@ -613,22 +668,15 @@ func regionHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	dbMutex.RLock()
-	defer dbMutex.RUnlock()
+	db, isCity, unlock, err := getDatabase()
+	if err != nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+	defer unlock()
 
-	dbRaw := dbValue.Load()
-	if dbRaw == nil {
-		http.Error(w, "Database not available", http.StatusServiceUnavailable)
-		return
-	}
-	db, ok := dbRaw.(*geoip2.Reader)
-	if !ok {
-		http.Error(w, "Database not available", http.StatusServiceUnavailable)
-		return
-	}
 	var country, region string
-
-	if isCityDB.Load() {
+	if isCity {
 		record, err := db.City(ip)
 		if err != nil {
 			logDebug("IP lookup failed for %s: %v", ipStr, err)
@@ -639,13 +687,11 @@ func regionHandler(w http.ResponseWriter, r *http.Request) {
 				country = "XX"
 			}
 			if len(record.Subdivisions) > 0 {
-				// Only return the region code, not the full COUNTRY-REGION format
 				region = record.Subdivisions[0].IsoCode
 			}
 			logDebug("IP lookup: %s -> Country: %s, Region: %s", ipStr, country, region)
 		}
 	} else {
-		// Country database - only has country info
 		record, err := db.Country(ip)
 		if err != nil {
 			logDebug("IP lookup failed for %s: %v", ipStr, err)
@@ -725,6 +771,30 @@ func respondRegion(w http.ResponseWriter, r *http.Request, ip, country, region s
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
+	// Check if database is available
+	dbRaw := dbValue.Load()
+	if dbRaw == nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "ERROR: Database not loaded")
+		return
+	}
+
+	db, ok := dbRaw.(*geoip2.Reader)
+	if !ok {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprint(w, "ERROR: Database invalid")
+		return
+	}
+
+	// Perform a quick lookup test
+	testIP := net.ParseIP("8.8.8.8")
+	_, err := db.Country(testIP)
+	if err != nil {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		fmt.Fprintf(w, "ERROR: Database lookup failed: %v", err)
+		return
+	}
+
 	w.WriteHeader(http.StatusOK)
 	fmt.Fprint(w, "OK")
 }
