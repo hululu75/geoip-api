@@ -360,12 +360,12 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 	if err != nil {
 		return fmt.Errorf("verification failed: new database is invalid: %w", err)
 	}
-	defer verifiedDB.Close()
 
 	// --- Verification Step 2: Lookup Test ---
 	testIP := net.ParseIP("8.8.8.8") // Google Public DNS, usually in US
 	record, err := verifiedDB.Country(testIP)
 	if err != nil {
+		verifiedDB.Close()
 		return fmt.Errorf("verification failed: lookup for %s failed on new database: %w", testIP, err)
 	}
 	if record.Country.IsoCode != "US" {
@@ -373,6 +373,9 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 	} else {
 		logDebug("Verification successful: Test IP %s correctly identified as %s.", testIP, record.Country.IsoCode)
 	}
+
+	// Close the verification database before moving the file to prevent resource leaks
+	verifiedDB.Close()
 
 	// Ensure the destination directory exists
 	dbDir := filepath.Dir(dbPath)
