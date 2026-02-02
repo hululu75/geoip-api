@@ -193,8 +193,10 @@ func main() {
 	defer func() {
 		dbMutex.Lock()
 		defer dbMutex.Unlock()
-		if db := dbValue.Load(); db != nil {
-			db.(*geoip2.Reader).Close()
+		if dbRaw := dbValue.Load(); dbRaw != nil {
+			if db, ok := dbRaw.(*geoip2.Reader); ok {
+				db.Close()
+			}
 		}
 	}()
 
@@ -450,7 +452,16 @@ func countryHandler(w http.ResponseWriter, r *http.Request) {
 	dbMutex.RLock()
 	defer dbMutex.RUnlock()
 
-	db := dbValue.Load().(*geoip2.Reader)
+	dbRaw := dbValue.Load()
+	if dbRaw == nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+	db, ok := dbRaw.(*geoip2.Reader)
+	if !ok {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
 	var country string
 
 	if isCityDB.Load() {
@@ -500,7 +511,16 @@ func cityHandler(w http.ResponseWriter, r *http.Request) {
 	dbMutex.RLock()
 	defer dbMutex.RUnlock()
 
-	db := dbValue.Load().(*geoip2.Reader)
+	dbRaw := dbValue.Load()
+	if dbRaw == nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+	db, ok := dbRaw.(*geoip2.Reader)
+	if !ok {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
 	var country, city, region string
 
 	if isCityDB.Load() {
@@ -556,7 +576,16 @@ func regionHandler(w http.ResponseWriter, r *http.Request) {
 	dbMutex.RLock()
 	defer dbMutex.RUnlock()
 
-	db := dbValue.Load().(*geoip2.Reader)
+	dbRaw := dbValue.Load()
+	if dbRaw == nil {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
+	db, ok := dbRaw.(*geoip2.Reader)
+	if !ok {
+		http.Error(w, "Database not available", http.StatusServiceUnavailable)
+		return
+	}
 	var country, region string
 
 	if isCityDB.Load() {
