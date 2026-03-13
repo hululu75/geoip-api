@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"compress/gzip"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -468,6 +470,16 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 	// Close the verification database before moving the file to prevent resource leaks
 	verifiedDB.Close()
 
+	// Compare hashes to avoid unnecessary replacement if the database hasn't changed
+	if _, err := os.Stat(dbPath); err == nil {
+		existingHash, err1 := fileSHA256(dbPath)
+		newHash, err2 := fileSHA256(tempMMDBPath)
+		if err1 == nil && err2 == nil && existingHash == newHash {
+			logInfo("Downloaded database is identical to the current database, skipping update.")
+			return nil
+		}
+	}
+
 	// Ensure the destination directory exists
 	dbDir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
@@ -482,6 +494,21 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 
 	logDebug("Database file successfully updated at %s", dbPath)
 	return nil
+}
+
+// fileSHA256 computes the SHA256 hash of a file and returns it as a hex string.
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // getDatabase safely retrieves the database reader with proper locking.
