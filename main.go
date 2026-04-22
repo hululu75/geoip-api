@@ -90,8 +90,7 @@ func logDebug(format string, v ...interface{}) {
 	}
 }
 
-// detectDatabaseTypeValue detects the database type and returns true for City, false for Country
-func detectDatabaseTypeValue(db *geoip2.Reader) (bool, error) {
+func isCityDatabase(db *geoip2.Reader) (bool, error) {
 	dbType := strings.ToLower(db.Metadata().DatabaseType)
 	if strings.Contains(dbType, "city") {
 		return true, nil
@@ -102,8 +101,8 @@ func detectDatabaseTypeValue(db *geoip2.Reader) (bool, error) {
 	return false, fmt.Errorf("unable to detect database type: %s", db.Metadata().DatabaseType)
 }
 
-func detectDatabaseType(db *geoip2.Reader) error {
-	isCity, err := detectDatabaseTypeValue(db)
+func initDatabaseType(db *geoip2.Reader) error {
+	isCity, err := isCityDatabase(db)
 	if err != nil {
 		return err
 	}
@@ -129,7 +128,7 @@ func main() {
 		currentLogLevel = LogLevelInfo
 	default:
 		currentLogLevel = LogLevelInfo
-		logInfo("Unknown LOG_LEVEL '%s', defaulting to INFO", logLevelStr)
+		log.Printf("[WARN] Unknown LOG_LEVEL '%s', defaulting to INFO", logLevelStr)
 	}
 
 	logDebug("Log level set to: %s", logLevelStr)
@@ -191,10 +190,15 @@ func main() {
 			log.Fatalf("MAXMIND_LICENSE_KEY not set. Cannot download or update GeoIP database. Please set the environment variable.")
 		}
 		logInfo("Starting GeoIP database download and verification.")
-		if _, err := downloadGeoLite2DB(licenseKey, dbPath); err != nil {
+		updated, err := downloadGeoLite2DB(licenseKey, dbPath)
+		if err != nil {
 			log.Fatalf("Failed to download or verify GeoIP database: %v", err)
 		}
-		logInfo("GeoIP database downloaded, verified, and updated successfully.")
+		if updated {
+			logInfo("GeoIP database downloaded, verified, and updated successfully.")
+		} else {
+			logInfo("GeoIP database is identical to the existing one, no update needed.")
+		}
 	} else {
 		logInfo("GeoIP database at %s is up to date.", dbPath)
 	}
@@ -206,7 +210,7 @@ func main() {
 	dbValue.Store(db)
 
 	// Detect database type (City or Country)
-	if err := detectDatabaseType(db); err != nil {
+	if err := initDatabaseType(db); err != nil {
 		log.Fatalf("Failed to detect database type: %v", err)
 	}
 
@@ -293,10 +297,10 @@ func periodicDatabaseUpdater(licenseKey, dbPath string, intervalHours int) {
 		}
 
 		lastModified := fileInfo.ModTime()
-		ageHours := time.Since(lastModified).Hours()
-		logDebug("Database age: %.1f hours (threshold: %d hours)", ageHours, intervalHours)
+		dbAge := time.Since(lastModified)
+		logDebug("Database age: %.1f hours (threshold: %d hours)", dbAge.Hours(), intervalHours)
 
-		if time.Since(lastModified) > time.Duration(intervalHours)*time.Hour {
+		if dbAge > time.Duration(intervalHours)*time.Hour {
 			logInfo("Database is older than %d hours, starting update...", intervalHours)
 
 			if licenseKey == "" {
@@ -335,7 +339,7 @@ func reloadDatabase(dbPath string) error {
 	}
 
 	// Detect database type for the new database (without storing yet)
-	newIsCityDB, err := detectDatabaseTypeValue(newDB)
+	newIsCityDB, err := isCityDatabase(newDB)
 	if err != nil {
 		newDB.Close()
 		return fmt.Errorf("failed to detect new database type: %w", err)
@@ -416,7 +420,6 @@ func downloadGeoLite2DB(licenseKey, dbPath string) (bool, error) {
 	defer gzr.Close()
 
 	tr := tar.NewReader(gzr)
-	var mmdbFileName string
 	var tempMMDBPath string
 
 	for {
@@ -429,8 +432,7 @@ func downloadGeoLite2DB(licenseKey, dbPath string) (bool, error) {
 		}
 
 		if strings.HasSuffix(header.Name, ".mmdb") {
-			mmdbFileName = filepath.Base(header.Name)
-			tempMMDBPath = filepath.Join(tmpDir, mmdbFileName)
+			tempMMDBPath = filepath.Join(tmpDir, filepath.Base(header.Name))
 			outFile, err := os.Create(tempMMDBPath)
 			if err != nil {
 				return false, fmt.Errorf("failed to create temporary .mmdb file: %w", err)
@@ -593,21 +595,77 @@ Note: City and region data only available with GeoLite2-City database.
 `, dbType)
 }
 
-func countryHandler(w http.ResponseWriter, r *http.Request) {
-	ipStr := strings.TrimPrefix(r.URL.Path, "/country/")
+type lookupResult struct {
+	country string
+	city    string
+	region  string
+}
 
+func parseIPFromPath(r *http.Request, prefix string) (string, net.IP, error) {
+	ipStr := strings.TrimPrefix(r.URL.Path, prefix)
 	if ipStr == "" {
+		return "", nil, fmt.Errorf("missing IP address")
+	}
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
+		return "", nil, fmt.Errorf("invalid IP address: %s", ipStr)
+	}
+	return ipStr, ip, nil
+}
+
+func lookupIP(db *geoip2.Reader, isCity bool, ip net.IP, ipStr string) *lookupResult {
+	result := &lookupResult{}
+	if isCity {
+		record, err := db.City(ip)
+		if err != nil {
+			logDebug("IP lookup failed for %s: %v", ipStr, err)
+			result.country = "XX"
+			return result
+		}
+		result.country = record.Country.IsoCode
+		if result.country == "" {
+			result.country = "XX"
+		}
+		result.city = record.City.Names["en"]
+		if len(record.Subdivisions) > 0 {
+			result.region = record.Subdivisions[0].IsoCode
+		}
+		logDebug("IP lookup: %s -> Country: %s, City: %s, Region: %s", ipStr, result.country, result.city, result.region)
+	} else {
+		record, err := db.Country(ip)
+		if err != nil {
+			logDebug("IP lookup failed for %s: %v", ipStr, err)
+			result.country = "XX"
+			return result
+		}
+		result.country = record.Country.IsoCode
+		if result.country == "" {
+			result.country = "XX"
+		}
+		logDebug("IP lookup: %s -> Country: %s", ipStr, result.country)
+	}
+	return result
+}
+
+func respondJSON(w http.ResponseWriter, v interface{}) {
+	w.Header().Set("Content-Type", "application/json")
+	if err := json.NewEncoder(w).Encode(v); err != nil {
+		logError("Failed to encode JSON response: %v", err)
+	}
+}
+
+func respondText(w http.ResponseWriter, parts ...string) {
+	w.Header().Set("Content-Type", "text/plain")
+	fmt.Fprintln(w, strings.Join(parts, "|"))
+}
+
+func countryHandler(w http.ResponseWriter, r *http.Request) {
+	ipStr, ip, err := parseIPFromPath(r, "/country/")
+	if err != nil {
 		http.Error(w, "Usage: /country/{ip} or /country/{ip}?format=json", http.StatusBadRequest)
 		return
 	}
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		logDebug("Invalid IP address requested: %s", ipStr)
-		http.Error(w, "Invalid IP address", http.StatusBadRequest)
-		return
-	}
-
 	db, isCity, unlock, err := getDatabase()
 	if err != nil {
 		http.Error(w, "Database not available", http.StatusServiceUnavailable)
@@ -615,51 +673,22 @@ func countryHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unlock()
 
-	var country string
-	if isCity {
-		record, err := db.City(ip)
-		if err != nil {
-			logDebug("IP lookup failed for %s: %v", ipStr, err)
-			country = "XX"
-		} else {
-			country = record.Country.IsoCode
-			if country == "" {
-				country = "XX"
-			}
-			logDebug("IP lookup: %s -> Country: %s", ipStr, country)
-		}
-	} else {
-		record, err := db.Country(ip)
-		if err != nil {
-			logDebug("IP lookup failed for %s: %v", ipStr, err)
-			country = "XX"
-		} else {
-			country = record.Country.IsoCode
-			if country == "" {
-				country = "XX"
-			}
-			logDebug("IP lookup: %s -> Country: %s", ipStr, country)
-		}
-	}
+	result := lookupIP(db, isCity, ip, ipStr)
 
-	respondCountry(w, r, ipStr, country)
+	if r.URL.Query().Get("format") == "json" {
+		respondJSON(w, CountryResponse{IP: ipStr, Country: result.country})
+	} else {
+		respondText(w, result.country)
+	}
 }
 
 func cityHandler(w http.ResponseWriter, r *http.Request) {
-	ipStr := strings.TrimPrefix(r.URL.Path, "/city/")
-
-	if ipStr == "" {
+	ipStr, ip, err := parseIPFromPath(r, "/city/")
+	if err != nil {
 		http.Error(w, "Usage: /city/{ip} or /city/{ip}?format=json", http.StatusBadRequest)
 		return
 	}
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		logDebug("Invalid IP address requested: %s", ipStr)
-		http.Error(w, "Invalid IP address", http.StatusBadRequest)
-		return
-	}
-
 	db, isCity, unlock, err := getDatabase()
 	if err != nil {
 		http.Error(w, "Database not available", http.StatusServiceUnavailable)
@@ -667,55 +696,22 @@ func cityHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unlock()
 
-	var country, city, region string
-	if isCity {
-		record, err := db.City(ip)
-		if err != nil {
-			logDebug("IP lookup failed for %s: %v", ipStr, err)
-			country = "XX"
-		} else {
-			country = record.Country.IsoCode
-			if country == "" {
-				country = "XX"
-			}
-			city = record.City.Names["en"]
-			if len(record.Subdivisions) > 0 {
-				region = record.Subdivisions[0].IsoCode
-			}
-			logDebug("IP lookup: %s -> Country: %s, City: %s, Region: %s", ipStr, country, city, region)
-		}
-	} else {
-		record, err := db.Country(ip)
-		if err != nil {
-			logDebug("IP lookup failed for %s: %v", ipStr, err)
-			country = "XX"
-		} else {
-			country = record.Country.IsoCode
-			if country == "" {
-				country = "XX"
-			}
-			logDebug("IP lookup (Country DB): %s -> Country: %s (no city/region data)", ipStr, country)
-		}
-	}
+	result := lookupIP(db, isCity, ip, ipStr)
 
-	respondCity(w, r, ipStr, country, city, region)
+	if r.URL.Query().Get("format") == "json" {
+		respondJSON(w, CityResponse{IP: ipStr, Country: result.country, City: result.city, Region: result.region})
+	} else {
+		respondText(w, result.country, result.city, result.region)
+	}
 }
 
 func regionHandler(w http.ResponseWriter, r *http.Request) {
-	ipStr := strings.TrimPrefix(r.URL.Path, "/region/")
-
-	if ipStr == "" {
+	ipStr, ip, err := parseIPFromPath(r, "/region/")
+	if err != nil {
 		http.Error(w, "Usage: /region/{ip} or /region/{ip}?format=json", http.StatusBadRequest)
 		return
 	}
 
-	ip := net.ParseIP(ipStr)
-	if ip == nil {
-		logDebug("Invalid IP address requested: %s", ipStr)
-		http.Error(w, "Invalid IP address", http.StatusBadRequest)
-		return
-	}
-
 	db, isCity, unlock, err := getDatabase()
 	if err != nil {
 		http.Error(w, "Database not available", http.StatusServiceUnavailable)
@@ -723,98 +719,12 @@ func regionHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unlock()
 
-	var country, region string
-	if isCity {
-		record, err := db.City(ip)
-		if err != nil {
-			logDebug("IP lookup failed for %s: %v", ipStr, err)
-			country = "XX"
-		} else {
-			country = record.Country.IsoCode
-			if country == "" {
-				country = "XX"
-			}
-			if len(record.Subdivisions) > 0 {
-				region = record.Subdivisions[0].IsoCode
-			}
-			logDebug("IP lookup: %s -> Country: %s, Region: %s", ipStr, country, region)
-		}
+	result := lookupIP(db, isCity, ip, ipStr)
+
+	if r.URL.Query().Get("format") == "json" {
+		respondJSON(w, RegionResponse{IP: ipStr, Country: result.country, Region: result.region})
 	} else {
-		record, err := db.Country(ip)
-		if err != nil {
-			logDebug("IP lookup failed for %s: %v", ipStr, err)
-			country = "XX"
-		} else {
-			country = record.Country.IsoCode
-			if country == "" {
-				country = "XX"
-			}
-			logDebug("IP lookup (Country DB): %s -> Country: %s (no region data)", ipStr, country)
-		}
-	}
-
-	respondRegion(w, r, ipStr, country, region)
-}
-
-func respondCountry(w http.ResponseWriter, r *http.Request, ip, country string) {
-	format := r.URL.Query().Get("format")
-
-	if format == "json" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(CountryResponse{
-			IP:      ip,
-			Country: country,
-		})
-	} else {
-		w.Header().Set("Content-Type", "text/plain")
-		fmt.Fprintln(w, country)
-	}
-}
-
-func respondCity(w http.ResponseWriter, r *http.Request, ip, country, city, region string) {
-	format := r.URL.Query().Get("format")
-
-	if format == "json" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(CityResponse{
-			IP:      ip,
-			Country: country,
-			City:    city,
-			Region:  region,
-		})
-	} else {
-		w.Header().Set("Content-Type", "text/plain")
-		// Text format: Country|City|Region
-		if city != "" && region != "" {
-			fmt.Fprintf(w, "%s|%s|%s\n", country, city, region)
-		} else if city != "" {
-			fmt.Fprintf(w, "%s|%s\n", country, city)
-		} else if region != "" {
-			fmt.Fprintf(w, "%s||%s\n", country, region)
-		} else {
-			fmt.Fprintln(w, country)
-		}
-	}
-}
-
-func respondRegion(w http.ResponseWriter, r *http.Request, ip, country, region string) {
-	format := r.URL.Query().Get("format")
-
-	if format == "json" {
-		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(RegionResponse{
-			IP:      ip,
-			Country: country,
-			Region:  region,
-		})
-	} else {
-		w.Header().Set("Content-Type", "text/plain")
-		// Text format: Country|Region
-		if region != "" {
-			fmt.Fprintf(w, "%s|%s\n", country, region)
-		} else {
-			fmt.Fprintln(w, country)
-		}
+		respondText(w, result.country, result.region)
 	}
 }
 
