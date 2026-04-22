@@ -11,8 +11,9 @@ services:
     ports:
       - "${HOST_PORT:-8080}:${CONTAINER_PORT:-8080}"
     volumes:
-      - ${GEOIP_DB_DIR:-./data}:/data:ro
+      - ${GEOIP_DB_DIR:-./data}:/data
     environment:
       - PORT=${CONTAINER_PORT:-8080}
       - GEOIP_DB_PATH=/data/${GEOIP_DB_FILENAME:-GeoLite2-Country.mmdb}
+      - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY:-}
       - TZ=${TZ:-UTC}

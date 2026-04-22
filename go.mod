@@ -1,6 +1,6 @@
 module geoip-api
 
-go 1.21
+go 1.24
 
 require github.com/oschwald/geoip2-golang v1.9.0
 

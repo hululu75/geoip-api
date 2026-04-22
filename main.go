@@ -40,8 +40,8 @@ const (
 )
 
 var (
-	dbValue  atomic.Value   // stores *geoip2.Reader
-	isCityDB atomic.Bool    // tracks if database is City (true) or Country (false)
+	dbValue  atomic.Value      // stores *geoip2.Reader
+	isCityDB atomic.Bool       // tracks if database is City (true) or Country (false)
 	dbMutex  = &sync.RWMutex{} // Mutex to protect DB access during reloads
 )
 
@@ -92,21 +92,14 @@ func logDebug(format string, v ...interface{}) {
 
 // detectDatabaseTypeValue detects the database type and returns true for City, false for Country
 func detectDatabaseTypeValue(db *geoip2.Reader) (bool, error) {
-	testIP := net.ParseIP("8.8.8.8")
-
-	// Try City lookup first
-	cityRecord, err := db.City(testIP)
-	if err == nil && cityRecord != nil {
+	dbType := strings.ToLower(db.Metadata().DatabaseType)
+	if strings.Contains(dbType, "city") {
 		return true, nil
 	}
-
-	// Try Country lookup
-	countryRecord, err := db.Country(testIP)
-	if err == nil && countryRecord != nil {
+	if strings.Contains(dbType, "country") {
 		return false, nil
 	}
-
-	return false, fmt.Errorf("unable to detect database type: both City and Country lookups failed")
+	return false, fmt.Errorf("unable to detect database type: %s", db.Metadata().DatabaseType)
 }
 
 func detectDatabaseType(db *geoip2.Reader) error {
@@ -198,7 +191,7 @@ func main() {
 			log.Fatalf("MAXMIND_LICENSE_KEY not set. Cannot download or update GeoIP database. Please set the environment variable.")
 		}
 		logInfo("Starting GeoIP database download and verification.")
-		if err := downloadGeoLite2DB(licenseKey, dbPath); err != nil {
+		if _, err := downloadGeoLite2DB(licenseKey, dbPath); err != nil {
 			log.Fatalf("Failed to download or verify GeoIP database: %v", err)
 		}
 		logInfo("GeoIP database downloaded, verified, and updated successfully.")
@@ -311,8 +304,14 @@ func periodicDatabaseUpdater(licenseKey, dbPath string, intervalHours int) {
 				continue
 			}
 
-			if err := downloadGeoLite2DB(licenseKey, dbPath); err != nil {
+			updated, err := downloadGeoLite2DB(licenseKey, dbPath)
+			if err != nil {
 				logError("Failed to update database: %v", err)
+				continue
+			}
+
+			if !updated {
+				logDebug("Database unchanged, skipping reload.")
 				continue
 			}
 
@@ -367,7 +366,10 @@ func reloadDatabase(dbPath string) error {
 	return nil
 }
 
-func downloadGeoLite2DB(licenseKey, dbPath string) error {
+// downloadGeoLite2DB downloads and verifies the GeoLite2 database.
+// Returns (true, nil) if the database was updated, (false, nil) if it was already up-to-date,
+// or (false, err) on failure.
+func downloadGeoLite2DB(licenseKey, dbPath string) (bool, error) {
 	// Determine which edition to download based on filename
 	editionID := "GeoLite2-Country"
 	if strings.Contains(strings.ToLower(dbPath), "city") {
@@ -390,18 +392,18 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 
 	resp, err := client.Get(downloadURL)
 	if err != nil {
-		return fmt.Errorf("failed to download database: %w", err)
+		return false, fmt.Errorf("failed to download database: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("failed to download database: received status code %d, response: %s", resp.StatusCode, resp.Status)
+		return false, fmt.Errorf("failed to download database: received status code %d, response: %s", resp.StatusCode, resp.Status)
 	}
 
 	logDebug("Download successful, extracting archive...")
 	tmpDir, err := os.MkdirTemp("", "geoipdb")
 	if err != nil {
-		return fmt.Errorf("failed to create temporary directory: %w", err)
+		return false, fmt.Errorf("failed to create temporary directory: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
@@ -409,7 +411,7 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 	limitedReader := io.LimitReader(resp.Body, maxDownloadSize)
 	gzr, err := gzip.NewReader(limitedReader)
 	if err != nil {
-		return fmt.Errorf("failed to create gzip reader: %w", err)
+		return false, fmt.Errorf("failed to create gzip reader: %w", err)
 	}
 	defer gzr.Close()
 
@@ -423,7 +425,7 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 			break
 		}
 		if err != nil {
-			return fmt.Errorf("failed to read tar header: %w", err)
+			return false, fmt.Errorf("failed to read tar header: %w", err)
 		}
 
 		if strings.HasSuffix(header.Name, ".mmdb") {
@@ -431,12 +433,12 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 			tempMMDBPath = filepath.Join(tmpDir, mmdbFileName)
 			outFile, err := os.Create(tempMMDBPath)
 			if err != nil {
-				return fmt.Errorf("failed to create temporary .mmdb file: %w", err)
+				return false, fmt.Errorf("failed to create temporary .mmdb file: %w", err)
 			}
 
 			if _, err := io.Copy(outFile, tr); err != nil {
 				outFile.Close()
-				return fmt.Errorf("failed to write to temporary .mmdb file: %w", err)
+				return false, fmt.Errorf("failed to write to temporary .mmdb file: %w", err)
 			}
 			outFile.Close()
 			break // Found the .mmdb file, no need to read further
@@ -444,14 +446,14 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 	}
 
 	if tempMMDBPath == "" {
-		return fmt.Errorf("could not find .mmdb file in archive")
+		return false, fmt.Errorf("could not find .mmdb file in archive")
 	}
 
 	// --- Verification Step 1: Load Test ---
 	logDebug("Verifying downloaded database: %s", tempMMDBPath)
 	verifiedDB, err := geoip2.Open(tempMMDBPath)
 	if err != nil {
-		return fmt.Errorf("verification failed: new database is invalid: %w", err)
+		return false, fmt.Errorf("verification failed: new database is invalid: %w", err)
 	}
 
 	// --- Verification Step 2: Lookup Test ---
@@ -459,7 +461,7 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 	record, err := verifiedDB.Country(testIP)
 	if err != nil {
 		verifiedDB.Close()
-		return fmt.Errorf("verification failed: lookup for %s failed on new database: %w", testIP, err)
+		return false, fmt.Errorf("verification failed: lookup for %s failed on new database: %w", testIP, err)
 	}
 	if record.Country.IsoCode != "US" {
 		logInfo("Warning: Test IP %s returned country %s, expected US. Continuing with update but this might indicate an issue.", testIP, record.Country.IsoCode)
@@ -476,24 +478,43 @@ func downloadGeoLite2DB(licenseKey, dbPath string) error {
 		newHash, err2 := fileSHA256(tempMMDBPath)
 		if err1 == nil && err2 == nil && existingHash == newHash {
 			logInfo("Downloaded database is identical to the current database, skipping update.")
-			return nil
+			return false, nil
 		}
 	}
 
 	// Ensure the destination directory exists
 	dbDir := filepath.Dir(dbPath)
 	if err := os.MkdirAll(dbDir, 0755); err != nil {
-		return fmt.Errorf("failed to create database directory %s: %w", dbDir, err)
+		return false, fmt.Errorf("failed to create database directory %s: %w", dbDir, err)
 	}
 
-	// Atomically replace the database file
 	logDebug("Moving verified database from %s to %s", tempMMDBPath, dbPath)
 	if err := os.Rename(tempMMDBPath, dbPath); err != nil {
-		return fmt.Errorf("failed to move verified database file from %s to %s: %w", tempMMDBPath, dbPath, err)
+		logDebug("Rename failed (possibly cross-device), falling back to copy: %v", err)
+		src, err := os.Open(tempMMDBPath)
+		if err != nil {
+			return false, fmt.Errorf("failed to open source file for copy: %w", err)
+		}
+		defer src.Close()
+
+		dst, err := os.Create(dbPath)
+		if err != nil {
+			return false, fmt.Errorf("failed to create destination file for copy: %w", err)
+		}
+		defer dst.Close()
+
+		if _, err := io.Copy(dst, src); err != nil {
+			os.Remove(dbPath)
+			return false, fmt.Errorf("failed to copy database file: %w", err)
+		}
+		if err := dst.Sync(); err != nil {
+			os.Remove(dbPath)
+			return false, fmt.Errorf("failed to sync database file: %w", err)
+		}
 	}
 
 	logDebug("Database file successfully updated at %s", dbPath)
-	return nil
+	return true, nil
 }
 
 // fileSHA256 computes the SHA256 hash of a file and returns it as a hex string.
@@ -798,24 +819,16 @@ func respondRegion(w http.ResponseWriter, r *http.Request, ip, country, region s
 }
 
 func healthHandler(w http.ResponseWriter, r *http.Request) {
-	// Check if database is available
-	dbRaw := dbValue.Load()
-	if dbRaw == nil {
+	db, _, unlock, err := getDatabase()
+	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprint(w, "ERROR: Database not loaded")
 		return
 	}
+	defer unlock()
 
-	db, ok := dbRaw.(*geoip2.Reader)
-	if !ok {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		fmt.Fprint(w, "ERROR: Database invalid")
-		return
-	}
-
-	// Perform a quick lookup test
 	testIP := net.ParseIP("8.8.8.8")
-	_, err := db.Country(testIP)
+	_, err = db.Country(testIP)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
 		fmt.Fprintf(w, "ERROR: Database lookup failed: %v", err)
