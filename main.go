@@ -40,9 +40,10 @@ const (
 )
 
 var (
-	dbValue  atomic.Value      // stores *geoip2.Reader
-	isCityDB atomic.Bool       // tracks if database is City (true) or Country (false)
-	dbMutex  = &sync.RWMutex{} // Mutex to protect DB access during reloads
+	dbValue    atomic.Value      // stores *geoip2.Reader
+	isCityDB   atomic.Bool       // tracks if database is City (true) or Country (false)
+	dbMutex    = &sync.RWMutex{} // Mutex to protect DB access during reloads
+	testIP     = net.ParseIP("8.8.8.8") // Pre-parsed IP for health checks
 )
 
 // Log levels
@@ -153,10 +154,8 @@ func main() {
 	if updateIntervalHoursStr != "" {
 		if i, err := strconv.Atoi(updateIntervalHoursStr); err == nil && i >= 0 {
 			updateIntervalHours = i
-		} else if err != nil {
-			logInfo("Invalid DB_UPDATE_INTERVAL_HOURS '%s', using default %d", updateIntervalHoursStr, updateIntervalHours)
 		} else {
-			logInfo("DB_UPDATE_INTERVAL_HOURS must be non-negative, using default %d", updateIntervalHours)
+			logInfo("Invalid DB_UPDATE_INTERVAL_HOURS '%s', using default %d", updateIntervalHoursStr, updateIntervalHours)
 		}
 	}
 
@@ -459,7 +458,6 @@ func downloadGeoLite2DB(licenseKey, dbPath string) (bool, error) {
 	}
 
 	// --- Verification Step 2: Lookup Test ---
-	testIP := net.ParseIP("8.8.8.8") // Google Public DNS, usually in US
 	record, err := verifiedDB.Country(testIP)
 	if err != nil {
 		verifiedDB.Close()
@@ -737,7 +735,6 @@ func healthHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	defer unlock()
 
-	testIP := net.ParseIP("8.8.8.8")
 	_, err = db.Country(testIP)
 	if err != nil {
 		w.WriteHeader(http.StatusServiceUnavailable)
